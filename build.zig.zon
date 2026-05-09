@@ -1,0 +1,25 @@
+.{
+    .name = .zoxel,
+    .version = "0.0.0",
+    .fingerprint = 0x1069635ff3b3135f, // Changing this has security and trust implications.
+    .minimum_zig_version = "0.16.0",
+    .dependencies = .{
+        .vulkan = .{
+            .url = "git+https://github.com/Snektron/vulkan-zig#f75b0011214705d6593e6ad64948c4832b1e6f27",
+            .hash = "vulkan-0.0.0-r7Ytx759AwBNdwE-gHKt3vzRQaU7RFerBg3FmD7iTEv4",
+        },
+        .vulkan_headers = .{
+            .url = "git+https://github.com/KhronosGroup/Vulkan-Headers#0e9de566b7d4051c5cc1b762e242c46565956bdf",
+            .hash = "N-V-__8AAJjgdwKSB9FMJoQcTm9ZO5bWDc1nWSaCu1Se53ie",
+        },
+        .glfw = .{
+            .url = "git+https://github.com/allyourcodebase/glfw#79e7ba3d082765954b59c4f11a2f9b4ff1ecb350",
+            .hash = "glfw-0.0.0-R5AeUo0JGgBvENV2Oz-u0V_unpWhEJTfK4qckBH5da6e",
+        },
+    },
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+    },
+}
