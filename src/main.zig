@@ -4,6 +4,8 @@ const c = @import("c");
 const Window = @import("window.zig").Window;
 const GraphicsContext = @import("graphics_context.zig").GraphicsContext;
 const Swapchain = @import("swapchain.zig").Swapchain;
+const math = @import("util/math.zig");
+const Mat4 = math.mat4.Mat4;
 const Allocator = std.mem.Allocator;
 
 const vert_spv align(@alignOf(u32)) = @embedFile("vertex_shader").*;
@@ -22,7 +24,7 @@ const Vertex = struct {
         .{
             .binding = 0,
             .location = 0,
-            .format = .r32g32_sfloat,
+            .format = .r32g32b32_sfloat,
             .offset = @offsetOf(Vertex, "pos"),
         },
         .{
@@ -33,17 +35,61 @@ const Vertex = struct {
         },
     };
 
-    pos: [2]f32,
+    pos: [3]f32,
     color: [3]f32,
 };
 
 const vertices = [_]Vertex{
-    .{ .pos = .{ 0, -0.5 }, .color = .{ 1, 0, 0 } },
-    .{ .pos = .{ 0.5, 0.5 }, .color = .{ 0, 1, 0 } },
-    .{ .pos = .{ -0.5, 0.5 }, .color = .{ 0, 0, 1 } },
+    // Front face (+Z, red)
+    .{ .pos = .{ -0.5, -0.5, 0.5 }, .color = .{ 1, 0, 0 } },
+    .{ .pos = .{ 0.5, -0.5, 0.5 }, .color = .{ 1, 0, 0 } },
+    .{ .pos = .{ 0.5, 0.5, 0.5 }, .color = .{ 1, 0, 0 } },
+    .{ .pos = .{ -0.5, -0.5, 0.5 }, .color = .{ 1, 0, 0 } },
+    .{ .pos = .{ 0.5, 0.5, 0.5 }, .color = .{ 1, 0, 0 } },
+    .{ .pos = .{ -0.5, 0.5, 0.5 }, .color = .{ 1, 0, 0 } },
+
+    // Back face (-Z, green)
+    .{ .pos = .{ -0.5, -0.5, -0.5 }, .color = .{ 0, 1, 0 } },
+    .{ .pos = .{ 0.5, 0.5, -0.5 }, .color = .{ 0, 1, 0 } },
+    .{ .pos = .{ 0.5, -0.5, -0.5 }, .color = .{ 0, 1, 0 } },
+    .{ .pos = .{ -0.5, -0.5, -0.5 }, .color = .{ 0, 1, 0 } },
+    .{ .pos = .{ -0.5, 0.5, -0.5 }, .color = .{ 0, 1, 0 } },
+    .{ .pos = .{ 0.5, 0.5, -0.5 }, .color = .{ 0, 1, 0 } },
+
+    // Right face (+X, blue)
+    .{ .pos = .{ 0.5, -0.5, -0.5 }, .color = .{ 0, 0, 1 } },
+    .{ .pos = .{ 0.5, 0.5, -0.5 }, .color = .{ 0, 0, 1 } },
+    .{ .pos = .{ 0.5, 0.5, 0.5 }, .color = .{ 0, 0, 1 } },
+    .{ .pos = .{ 0.5, -0.5, -0.5 }, .color = .{ 0, 0, 1 } },
+    .{ .pos = .{ 0.5, 0.5, 0.5 }, .color = .{ 0, 0, 1 } },
+    .{ .pos = .{ 0.5, -0.5, 0.5 }, .color = .{ 0, 0, 1 } },
+
+    // Left face (-X, yellow)
+    .{ .pos = .{ -0.5, -0.5, -0.5 }, .color = .{ 1, 1, 0 } },
+    .{ .pos = .{ -0.5, -0.5, 0.5 }, .color = .{ 1, 1, 0 } },
+    .{ .pos = .{ -0.5, 0.5, 0.5 }, .color = .{ 1, 1, 0 } },
+    .{ .pos = .{ -0.5, -0.5, -0.5 }, .color = .{ 1, 1, 0 } },
+    .{ .pos = .{ -0.5, 0.5, 0.5 }, .color = .{ 1, 1, 0 } },
+    .{ .pos = .{ -0.5, 0.5, -0.5 }, .color = .{ 1, 1, 0 } },
+
+    // Top face (+Y, magenta)
+    .{ .pos = .{ -0.5, 0.5, 0.5 }, .color = .{ 1, 0, 1 } },
+    .{ .pos = .{ 0.5, 0.5, 0.5 }, .color = .{ 1, 0, 1 } },
+    .{ .pos = .{ 0.5, 0.5, -0.5 }, .color = .{ 1, 0, 1 } },
+    .{ .pos = .{ -0.5, 0.5, 0.5 }, .color = .{ 1, 0, 1 } },
+    .{ .pos = .{ 0.5, 0.5, -0.5 }, .color = .{ 1, 0, 1 } },
+    .{ .pos = .{ -0.5, 0.5, -0.5 }, .color = .{ 1, 0, 1 } },
+
+    // Bottom face (-Y, cyan)
+    .{ .pos = .{ -0.5, -0.5, 0.5 }, .color = .{ 0, 1, 1 } },
+    .{ .pos = .{ -0.5, -0.5, -0.5 }, .color = .{ 0, 1, 1 } },
+    .{ .pos = .{ 0.5, -0.5, -0.5 }, .color = .{ 0, 1, 1 } },
+    .{ .pos = .{ -0.5, -0.5, 0.5 }, .color = .{ 0, 1, 1 } },
+    .{ .pos = .{ 0.5, -0.5, -0.5 }, .color = .{ 0, 1, 1 } },
+    .{ .pos = .{ 0.5, -0.5, 0.5 }, .color = .{ 0, 1, 1 } },
 };
 
-pub fn main() !void {
+pub fn main(init: std.process.Init) !void {
     var window = try Window.init("Zoxel", 800, 600);
     defer window.deinit();
 
@@ -52,9 +98,7 @@ pub fn main() !void {
         .height = window.height,
     };
 
-    var gpa = std.heap.DebugAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
+    const allocator = init.gpa;
 
     const gc = try GraphicsContext.init(allocator, window.title, window.window);
     defer gc.deinit();
@@ -64,12 +108,17 @@ pub fn main() !void {
     var swapchain = try Swapchain.init(&gc, allocator, extent);
     defer swapchain.deinit();
 
+    const push_constant_range = vk.PushConstantRange{
+        .stage_flags = .{ .vertex_bit = true },
+        .offset = 0,
+        .size = @sizeOf(Mat4),
+    };
     const pipeline_layout = try gc.dev.createPipelineLayout(&.{
         .flags = .{},
         .set_layout_count = 0,
         .p_set_layouts = undefined,
-        .push_constant_range_count = 0,
-        .p_push_constant_ranges = undefined,
+        .push_constant_range_count = 1,
+        .p_push_constant_ranges = @ptrCast(&push_constant_range),
     }, null);
     defer gc.dev.destroyPipelineLayout(pipeline_layout, null);
 
@@ -100,6 +149,22 @@ pub fn main() !void {
 
     try uploadVertices(&gc, pool, buffer);
 
+    const computeMvp = struct {
+        fn f(ext: vk.Extent2D) Mat4 {
+            const aspect = @as(f32, @floatFromInt(ext.width)) /
+                @as(f32, @floatFromInt(ext.height));
+            const proj = math.mat4.perspective(std.math.degreesToRadians(60.0), aspect, 0.1, 100.0);
+            const view = math.mat4.translate(0, 0, -2);
+            const model = math.mat4.mul(
+                math.mat4.rotateY(std.math.degreesToRadians(35.0)),
+                math.mat4.rotateZ(std.math.degreesToRadians(35.0)),
+            );
+            return math.mat4.mul(proj, math.mat4.mul(view, model));
+        }
+    }.f;
+
+    var mvp = computeMvp(swapchain.extent);
+
     var cmdbufs = try createCommandBuffers(
         &gc,
         pool,
@@ -108,6 +173,8 @@ pub fn main() !void {
         swapchain.extent,
         render_pass,
         pipeline,
+        pipeline_layout,
+        mvp,
         framebuffers,
     );
     defer destroyCommandBuffers(&gc, pool, allocator, cmdbufs);
@@ -132,6 +199,7 @@ pub fn main() !void {
 
             destroyFramebuffers(&gc, allocator, framebuffers);
             framebuffers = try createFramebuffers(&gc, allocator, render_pass, swapchain);
+            mvp = computeMvp(swapchain.extent);
 
             destroyCommandBuffers(&gc, pool, allocator, cmdbufs);
             cmdbufs = try createCommandBuffers(
@@ -142,6 +210,8 @@ pub fn main() !void {
                 swapchain.extent,
                 render_pass,
                 pipeline,
+                pipeline_layout,
+                mvp,
                 framebuffers,
             );
         }
@@ -223,6 +293,8 @@ fn createCommandBuffers(
     extent: vk.Extent2D,
     render_pass: vk.RenderPass,
     pipeline: vk.Pipeline,
+    pipeline_layout: vk.PipelineLayout,
+    mvp: Mat4,
     framebuffers: []vk.Framebuffer,
 ) ![]vk.CommandBuffer {
     const cmdbufs = try allocator.alloc(vk.CommandBuffer, framebuffers.len);
@@ -274,6 +346,14 @@ fn createCommandBuffers(
         }, .@"inline");
 
         gc.dev.cmdBindPipeline(cmdbuf, .graphics, pipeline);
+        gc.dev.cmdPushConstants(
+            cmdbuf,
+            pipeline_layout,
+            .{ .vertex_bit = true },
+            0,
+            @sizeOf(Mat4),
+            @ptrCast(&mvp),
+        );
         const offset = [_]vk.DeviceSize{0};
         gc.dev.cmdBindVertexBuffers(cmdbuf, 0, &.{buffer}, &offset);
         gc.dev.cmdDraw(cmdbuf, vertices.len, 1, 0, 0);
@@ -401,7 +481,7 @@ fn createPipeline(
         .rasterizer_discard_enable = .false,
         .polygon_mode = .fill,
         .cull_mode = .{ .back_bit = true },
-        .front_face = .clockwise,
+        .front_face = .counter_clockwise,
         .depth_bias_enable = .false,
         .depth_bias_constant_factor = 0,
         .depth_bias_clamp = 0,
