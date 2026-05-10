@@ -114,6 +114,10 @@ pub const Swapchain = struct {
         for (self.swap_images) |si| try si.waitForFence(self.gc);
     }
 
+    pub fn waitForCurrentFence(self: Swapchain) !void {
+        try self.currentSwapImage().waitForFence(self.gc);
+    }
+
     pub fn deinit(self: Swapchain) void {
         // if we have no swapchain none of these should exist and we can just return
         if (self.handle == .null_handle) return;

@@ -132,51 +132,50 @@ pub fn main(init: std.process.Init) !void {
     defer destroyFramebuffers(&gc, allocator, framebuffers);
 
     const pool = try gc.dev.createCommandPool(&.{
+        .flags = .{ .reset_command_buffer_bit = true },
         .queue_family_index = gc.graphics_queue.family,
     }, null);
     defer gc.dev.destroyCommandPool(pool, null);
 
-    const buffer = try gc.dev.createBuffer(&.{
+    const vertex_buffer = try gc.dev.createBuffer(&.{
         .size = @sizeOf(@TypeOf(vertices)),
         .usage = .{ .transfer_dst_bit = true, .vertex_buffer_bit = true },
         .sharing_mode = .exclusive,
     }, null);
-    defer gc.dev.destroyBuffer(buffer, null);
-    const mem_reqs = gc.dev.getBufferMemoryRequirements(buffer);
+    defer gc.dev.destroyBuffer(vertex_buffer, null);
+    const mem_reqs = gc.dev.getBufferMemoryRequirements(vertex_buffer);
     const memory = try gc.allocate(mem_reqs, .{ .device_local_bit = true });
     defer gc.dev.freeMemory(memory, null);
-    try gc.dev.bindBufferMemory(buffer, memory, 0);
+    try gc.dev.bindBufferMemory(vertex_buffer, memory, 0);
 
-    try uploadVertices(&gc, pool, buffer);
+    try uploadVertices(&gc, pool, vertex_buffer);
+
+    const UserPos = struct {
+        x: f32 = 0,
+        y: f32 = 0,
+        z: f32 = 0,
+        pitch: f32 = 0,
+        yaw: f32 = 0,
+        roll: f32 = 0,
+    };
+
+    var userPos = UserPos{};
 
     const computeMvp = struct {
-        fn f(ext: vk.Extent2D) Mat4 {
+        fn f(ext: vk.Extent2D, pos: UserPos) Mat4 {
             const aspect = @as(f32, @floatFromInt(ext.width)) /
                 @as(f32, @floatFromInt(ext.height));
             const proj = math.mat4.perspective(std.math.degreesToRadians(60.0), aspect, 0.1, 100.0);
             const view = math.mat4.translate(0, 0, -2);
-            const model = math.mat4.mul(
-                math.mat4.rotateY(std.math.degreesToRadians(35.0)),
-                math.mat4.rotateZ(std.math.degreesToRadians(35.0)),
-            );
+            const model = math.mat4.mul(math.mat4.mul(
+                math.mat4.rotateX(pos.pitch),
+                math.mat4.rotateY(pos.yaw),
+            ), math.mat4.rotateZ(pos.roll));
             return math.mat4.mul(proj, math.mat4.mul(view, model));
         }
     }.f;
 
-    var mvp = computeMvp(swapchain.extent);
-
-    var cmdbufs = try createCommandBuffers(
-        &gc,
-        pool,
-        allocator,
-        buffer,
-        swapchain.extent,
-        render_pass,
-        pipeline,
-        pipeline_layout,
-        mvp,
-        framebuffers,
-    );
+    var cmdbufs = try allocateCommandBuffers(&gc, pool, allocator, framebuffers.len);
     defer destroyCommandBuffers(&gc, pool, allocator, cmdbufs);
 
     var state: Swapchain.PresentState = .optimal;
@@ -191,6 +190,15 @@ pub fn main(init: std.process.Init) !void {
             continue;
         }
 
+        if (c.glfwGetKey(window.window, c.GLFW_KEY_LEFT) == c.GLFW_PRESS)
+            userPos.yaw += 0.001;
+        if (c.glfwGetKey(window.window, c.GLFW_KEY_RIGHT) == c.GLFW_PRESS)
+            userPos.yaw -= 0.001;
+        if (c.glfwGetKey(window.window, c.GLFW_KEY_UP) == c.GLFW_PRESS)
+            userPos.pitch -= 0.001;
+        if (c.glfwGetKey(window.window, c.GLFW_KEY_DOWN) == c.GLFW_PRESS)
+            userPos.pitch += 0.001;
+
         if (state == .suboptimal or extent.width != @as(u32, @intCast(w)) or extent.height != @as(u32, @intCast(h))) {
             extent.width = @intCast(w);
             extent.height = @intCast(h);
@@ -199,24 +207,30 @@ pub fn main(init: std.process.Init) !void {
 
             destroyFramebuffers(&gc, allocator, framebuffers);
             framebuffers = try createFramebuffers(&gc, allocator, render_pass, swapchain);
-            mvp = computeMvp(swapchain.extent);
 
             destroyCommandBuffers(&gc, pool, allocator, cmdbufs);
-            cmdbufs = try createCommandBuffers(
-                &gc,
-                pool,
-                allocator,
-                buffer,
-                swapchain.extent,
-                render_pass,
-                pipeline,
-                pipeline_layout,
-                mvp,
-                framebuffers,
-            );
+            cmdbufs = try allocateCommandBuffers(&gc, pool, allocator, framebuffers.len);
         }
 
-        const cmdbuf = cmdbufs[swapchain.image_index];
+        const image_index = swapchain.image_index;
+        const cmdbuf = cmdbufs[image_index];
+
+        try swapchain.waitForCurrentFence();
+
+        const mvp = computeMvp(swapchain.extent, userPos);
+        try gc.dev.resetCommandBuffer(cmdbuf, .{});
+        try recordCommandBuffer(
+            &gc,
+            cmdbuf,
+            framebuffers[image_index],
+            swapchain.extent,
+            render_pass,
+            pipeline,
+            pipeline_layout,
+            vertex_buffer,
+            mvp,
+        );
+
         state = swapchain.present(cmdbuf) catch |err| switch (err) {
             error.OutOfDateKHR => Swapchain.PresentState.suboptimal,
             else => |narrow| return narrow,
@@ -252,7 +266,13 @@ fn uploadVertices(gc: *const GraphicsContext, pool: vk.CommandPool, buffer: vk.B
     try copyBuffer(gc, pool, buffer, staging_buffer, @sizeOf(@TypeOf(vertices)));
 }
 
-fn copyBuffer(gc: *const GraphicsContext, pool: vk.CommandPool, dst: vk.Buffer, src: vk.Buffer, size: vk.DeviceSize) !void {
+fn copyBuffer(
+    gc: *const GraphicsContext,
+    pool: vk.CommandPool,
+    dst: vk.Buffer,
+    src: vk.Buffer,
+    size: vk.DeviceSize,
+) !void {
     var cmdbuf_handle: vk.CommandBuffer = undefined;
     try gc.dev.allocateCommandBuffers(&.{
         .command_pool = pool,
@@ -285,19 +305,13 @@ fn copyBuffer(gc: *const GraphicsContext, pool: vk.CommandPool, dst: vk.Buffer, 
     try gc.dev.queueWaitIdle(gc.graphics_queue.handle);
 }
 
-fn createCommandBuffers(
+fn allocateCommandBuffers(
     gc: *const GraphicsContext,
     pool: vk.CommandPool,
     allocator: Allocator,
-    buffer: vk.Buffer,
-    extent: vk.Extent2D,
-    render_pass: vk.RenderPass,
-    pipeline: vk.Pipeline,
-    pipeline_layout: vk.PipelineLayout,
-    mvp: Mat4,
-    framebuffers: []vk.Framebuffer,
+    count: usize,
 ) ![]vk.CommandBuffer {
-    const cmdbufs = try allocator.alloc(vk.CommandBuffer, framebuffers.len);
+    const cmdbufs = try allocator.alloc(vk.CommandBuffer, count);
     errdefer allocator.free(cmdbufs);
 
     try gc.dev.allocateCommandBuffers(&.{
@@ -305,8 +319,21 @@ fn createCommandBuffers(
         .level = .primary,
         .command_buffer_count = @intCast(cmdbufs.len),
     }, cmdbufs.ptr);
-    errdefer gc.dev.freeCommandBuffers(pool, cmdbufs);
 
+    return cmdbufs;
+}
+
+fn recordCommandBuffer(
+    gc: *const GraphicsContext,
+    cmdbuf: vk.CommandBuffer,
+    framebuffer: vk.Framebuffer,
+    extent: vk.Extent2D,
+    render_pass: vk.RenderPass,
+    pipeline: vk.Pipeline,
+    pipeline_layout: vk.PipelineLayout,
+    vertex_buffer: vk.Buffer,
+    mvp: Mat4,
+) !void {
     const clear = vk.ClearValue{
         .color = .{ .float_32 = .{ 0, 0, 0, 1 } },
     };
@@ -325,43 +352,40 @@ fn createCommandBuffers(
         .extent = extent,
     };
 
-    for (cmdbufs, framebuffers) |cmdbuf, framebuffer| {
-        try gc.dev.beginCommandBuffer(cmdbuf, &.{});
+    try gc.dev.beginCommandBuffer(cmdbuf, &.{});
 
-        gc.dev.cmdSetViewport(cmdbuf, 0, &.{viewport});
-        gc.dev.cmdSetScissor(cmdbuf, 0, &.{scissor});
+    gc.dev.cmdSetViewport(cmdbuf, 0, &.{viewport});
+    gc.dev.cmdSetScissor(cmdbuf, 0, &.{scissor});
 
-        // This needs to be a separate definition - see https://github.com/ziglang/zig/issues/7627.
-        const render_area = vk.Rect2D{
-            .offset = .{ .x = 0, .y = 0 },
-            .extent = extent,
-        };
+    // This needs to be a separate definition - see https://github.com/ziglang/zig/issues/7627.
+    const render_area = vk.Rect2D{
+        .offset = .{ .x = 0, .y = 0 },
+        .extent = extent,
+    };
 
-        gc.dev.cmdBeginRenderPass(cmdbuf, &.{
-            .render_pass = render_pass,
-            .framebuffer = framebuffer,
-            .render_area = render_area,
-            .clear_value_count = 1,
-            .p_clear_values = @ptrCast(&clear),
-        }, .@"inline");
+    gc.dev.cmdBeginRenderPass(cmdbuf, &.{
+        .render_pass = render_pass,
+        .framebuffer = framebuffer,
+        .render_area = render_area,
+        .clear_value_count = 1,
+        .p_clear_values = @ptrCast(&clear),
+    }, .@"inline");
 
-        gc.dev.cmdBindPipeline(cmdbuf, .graphics, pipeline);
-        gc.dev.cmdPushConstants(
-            cmdbuf,
-            pipeline_layout,
-            .{ .vertex_bit = true },
-            0,
-            @sizeOf(Mat4),
-            @ptrCast(&mvp),
-        );
-        const offset = [_]vk.DeviceSize{0};
-        gc.dev.cmdBindVertexBuffers(cmdbuf, 0, &.{buffer}, &offset);
-        gc.dev.cmdDraw(cmdbuf, vertices.len, 1, 0, 0);
+    gc.dev.cmdBindPipeline(cmdbuf, .graphics, pipeline);
+    gc.dev.cmdPushConstants(
+        cmdbuf,
+        pipeline_layout,
+        .{ .vertex_bit = true },
+        0,
+        @sizeOf(Mat4),
+        @ptrCast(&mvp),
+    );
+    const offset = [_]vk.DeviceSize{0};
+    gc.dev.cmdBindVertexBuffers(cmdbuf, 0, &.{vertex_buffer}, &offset);
+    gc.dev.cmdDraw(cmdbuf, vertices.len, 1, 0, 0);
 
-        gc.dev.cmdEndRenderPass(cmdbuf);
-        try gc.dev.endCommandBuffer(cmdbuf);
-    }
-    return cmdbufs;
+    gc.dev.cmdEndRenderPass(cmdbuf);
+    try gc.dev.endCommandBuffer(cmdbuf);
 }
 
 fn destroyCommandBuffers(gc: *const GraphicsContext, pool: vk.CommandPool, allocator: Allocator, cmdbufs: []vk.CommandBuffer) void {
@@ -471,9 +495,9 @@ fn createPipeline(
 
     const pvsci = vk.PipelineViewportStateCreateInfo{
         .viewport_count = 1,
-        .p_viewports = undefined, // set in createCommandBuffers with cmdSetViewport
+        .p_viewports = undefined, // set in recordCommandBuffers with cmdSetViewport
         .scissor_count = 1,
-        .p_scissors = undefined, // set in createCommandBuffers with cmdSetScissor
+        .p_scissors = undefined, // set in recordCommandBuffers with cmdSetScissor
     };
 
     const prsci = vk.PipelineRasterizationStateCreateInfo{
