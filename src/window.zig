@@ -4,11 +4,11 @@ const std = @import("std");
 pub const Window = struct {
     width: u32,
     height: u32,
-    title: [*c]const u8,
+    title: [*:0]const u8,
 
     window: *c.struct_GLFWwindow,
 
-    pub fn init(title: [*c]const u8, width: u32, height: u32) !Window {
+    pub fn init(title: [*:0]const u8, width: u32, height: u32) !Window {
         if (c.glfwInit() != c.GLFW_TRUE) return error.GlfwInitFailed;
 
         if (c.glfwVulkanSupported() != c.GLFW_TRUE) {
@@ -16,14 +16,14 @@ pub const Window = struct {
             return error.VulkanMissing;
         }
 
-        c.glfwWindowHint(c.GLFW_RESIZABLE, c.GLFW_FALSE);
+        // c.glfwWindowHint(c.GLFW_RESIZABLE, c.GLFW_FALSE);
         c.glfwWindowHint(c.GLFW_CLIENT_API, c.GLFW_NO_API);
-        c.glfwWindowHintString(c.GLFW_WAYLAND_APP_ID, title);
+        c.glfwWindowHintString(c.GLFW_WAYLAND_APP_ID, @ptrCast(title));
 
         const window = c.glfwCreateWindow(
             @intCast(width),
             @intCast(height),
-            title,
+            @ptrCast(title),
             null,
             null,
         ) orelse return error.WindowInitFailed;

@@ -2,8 +2,11 @@ const std = @import("std");
 const vk = @import("vulkan");
 const c = @import("c");
 const Window = @import("window.zig").Window;
+const test_ = @import("window.zig");
 const GraphicsContext = @import("graphics_context.zig").GraphicsContext;
 const Swapchain = @import("swapchain.zig").Swapchain;
+const Mesh = @import("mesh.zig");
+const Vertex = Mesh.Vertex;
 const math = @import("util/math.zig");
 const Mat4 = math.mat4.Mat4;
 const Allocator = std.mem.Allocator;
@@ -11,82 +14,58 @@ const Allocator = std.mem.Allocator;
 const vert_spv align(@alignOf(u32)) = @embedFile("vertex_shader").*;
 const frag_spv align(@alignOf(u32)) = @embedFile("fragment_shader").*;
 
-const app_name = "vulkan-zig triangle example";
+const mesh_path = "assets/teapot.obj";
 
-const Vertex = struct {
-    const binding_description = vk.VertexInputBindingDescription{
-        .binding = 0,
-        .stride = @sizeOf(Vertex),
-        .input_rate = .vertex,
-    };
+const depth_format: vk.Format = .d32_sfloat;
 
-    const attribute_description = [_]vk.VertexInputAttributeDescription{
-        .{
-            .binding = 0,
-            .location = 0,
-            .format = .r32g32b32_sfloat,
-            .offset = @offsetOf(Vertex, "pos"),
-        },
-        .{
-            .binding = 0,
-            .location = 1,
-            .format = .r32g32b32_sfloat,
-            .offset = @offsetOf(Vertex, "color"),
-        },
-    };
+const Depth = struct {
+    image: vk.Image,
+    memory: vk.DeviceMemory,
+    view: vk.ImageView,
 
-    pos: [3]f32,
-    color: [3]f32,
-};
+    fn init(gc: *const GraphicsContext, extent: vk.Extent2D) !Depth {
+        const image = try gc.dev.createImage(&.{
+            .image_type = .@"2d",
+            .format = depth_format,
+            .extent = .{ .width = extent.width, .height = extent.height, .depth = 1 },
+            .mip_levels = 1,
+            .array_layers = 1,
+            .samples = .{ .@"1_bit" = true },
+            .tiling = .optimal,
+            .usage = .{ .depth_stencil_attachment_bit = true },
+            .sharing_mode = .exclusive,
+            .initial_layout = .undefined,
+        }, null);
+        errdefer gc.dev.destroyImage(image, null);
 
-const vertices = [_]Vertex{
-    // Front face (+Z, red)
-    .{ .pos = .{ -0.5, -0.5, 0.5 }, .color = .{ 1, 0, 0 } },
-    .{ .pos = .{ 0.5, -0.5, 0.5 }, .color = .{ 1, 0, 0 } },
-    .{ .pos = .{ 0.5, 0.5, 0.5 }, .color = .{ 1, 0, 0 } },
-    .{ .pos = .{ -0.5, -0.5, 0.5 }, .color = .{ 1, 0, 0 } },
-    .{ .pos = .{ 0.5, 0.5, 0.5 }, .color = .{ 1, 0, 0 } },
-    .{ .pos = .{ -0.5, 0.5, 0.5 }, .color = .{ 1, 0, 0 } },
+        const mem_reqs = gc.dev.getImageMemoryRequirements(image);
+        const memory = try gc.allocate(mem_reqs, .{ .device_local_bit = true });
+        errdefer gc.dev.freeMemory(memory, null);
+        try gc.dev.bindImageMemory(image, memory, 0);
 
-    // Back face (-Z, green)
-    .{ .pos = .{ -0.5, -0.5, -0.5 }, .color = .{ 0, 1, 0 } },
-    .{ .pos = .{ 0.5, 0.5, -0.5 }, .color = .{ 0, 1, 0 } },
-    .{ .pos = .{ 0.5, -0.5, -0.5 }, .color = .{ 0, 1, 0 } },
-    .{ .pos = .{ -0.5, -0.5, -0.5 }, .color = .{ 0, 1, 0 } },
-    .{ .pos = .{ -0.5, 0.5, -0.5 }, .color = .{ 0, 1, 0 } },
-    .{ .pos = .{ 0.5, 0.5, -0.5 }, .color = .{ 0, 1, 0 } },
+        const view = try gc.dev.createImageView(&.{
+            .image = image,
+            .view_type = .@"2d",
+            .format = depth_format,
+            .components = .{ .r = .identity, .g = .identity, .b = .identity, .a = .identity },
+            .subresource_range = .{
+                .aspect_mask = .{ .depth_bit = true },
+                .base_mip_level = 0,
+                .level_count = 1,
+                .base_array_layer = 0,
+                .layer_count = 1,
+            },
+        }, null);
+        errdefer gc.dev.destroyImageView(view, null);
 
-    // Right face (+X, blue)
-    .{ .pos = .{ 0.5, -0.5, -0.5 }, .color = .{ 0, 0, 1 } },
-    .{ .pos = .{ 0.5, 0.5, -0.5 }, .color = .{ 0, 0, 1 } },
-    .{ .pos = .{ 0.5, 0.5, 0.5 }, .color = .{ 0, 0, 1 } },
-    .{ .pos = .{ 0.5, -0.5, -0.5 }, .color = .{ 0, 0, 1 } },
-    .{ .pos = .{ 0.5, 0.5, 0.5 }, .color = .{ 0, 0, 1 } },
-    .{ .pos = .{ 0.5, -0.5, 0.5 }, .color = .{ 0, 0, 1 } },
+        return .{ .image = image, .memory = memory, .view = view };
+    }
 
-    // Left face (-X, yellow)
-    .{ .pos = .{ -0.5, -0.5, -0.5 }, .color = .{ 1, 1, 0 } },
-    .{ .pos = .{ -0.5, -0.5, 0.5 }, .color = .{ 1, 1, 0 } },
-    .{ .pos = .{ -0.5, 0.5, 0.5 }, .color = .{ 1, 1, 0 } },
-    .{ .pos = .{ -0.5, -0.5, -0.5 }, .color = .{ 1, 1, 0 } },
-    .{ .pos = .{ -0.5, 0.5, 0.5 }, .color = .{ 1, 1, 0 } },
-    .{ .pos = .{ -0.5, 0.5, -0.5 }, .color = .{ 1, 1, 0 } },
-
-    // Top face (+Y, magenta)
-    .{ .pos = .{ -0.5, 0.5, 0.5 }, .color = .{ 1, 0, 1 } },
-    .{ .pos = .{ 0.5, 0.5, 0.5 }, .color = .{ 1, 0, 1 } },
-    .{ .pos = .{ 0.5, 0.5, -0.5 }, .color = .{ 1, 0, 1 } },
-    .{ .pos = .{ -0.5, 0.5, 0.5 }, .color = .{ 1, 0, 1 } },
-    .{ .pos = .{ 0.5, 0.5, -0.5 }, .color = .{ 1, 0, 1 } },
-    .{ .pos = .{ -0.5, 0.5, -0.5 }, .color = .{ 1, 0, 1 } },
-
-    // Bottom face (-Y, cyan)
-    .{ .pos = .{ -0.5, -0.5, 0.5 }, .color = .{ 0, 1, 1 } },
-    .{ .pos = .{ -0.5, -0.5, -0.5 }, .color = .{ 0, 1, 1 } },
-    .{ .pos = .{ 0.5, -0.5, -0.5 }, .color = .{ 0, 1, 1 } },
-    .{ .pos = .{ -0.5, -0.5, 0.5 }, .color = .{ 0, 1, 1 } },
-    .{ .pos = .{ 0.5, -0.5, -0.5 }, .color = .{ 0, 1, 1 } },
-    .{ .pos = .{ 0.5, -0.5, 0.5 }, .color = .{ 0, 1, 1 } },
+    fn deinit(self: Depth, gc: *const GraphicsContext) void {
+        gc.dev.destroyImageView(self.view, null);
+        gc.dev.destroyImage(self.image, null);
+        gc.dev.freeMemory(self.memory, null);
+    }
 };
 
 pub fn main(init: std.process.Init) !void {
@@ -108,6 +87,17 @@ pub fn main(init: std.process.Init) !void {
     var swapchain = try Swapchain.init(&gc, allocator, extent);
     defer swapchain.deinit();
 
+    var depth = try Depth.init(&gc, extent);
+    defer depth.deinit(&gc);
+
+    var triangulated = try Mesh.loadObj(init.io, allocator, mesh_path);
+    defer triangulated.deinit(allocator);
+    std.log.info("Loaded {s}: {d} verts, {d} indices", .{
+        mesh_path,
+        triangulated.vertices.len,
+        triangulated.indices.len,
+    });
+
     const push_constant_range = vk.PushConstantRange{
         .stage_flags = .{ .vertex_bit = true },
         .offset = 0,
@@ -128,7 +118,7 @@ pub fn main(init: std.process.Init) !void {
     const pipeline = try createPipeline(&gc, pipeline_layout, render_pass);
     defer gc.dev.destroyPipeline(pipeline, null);
 
-    var framebuffers = try createFramebuffers(&gc, allocator, render_pass, swapchain);
+    var framebuffers = try createFramebuffers(&gc, allocator, render_pass, swapchain, depth.view);
     defer destroyFramebuffers(&gc, allocator, framebuffers);
 
     const pool = try gc.dev.createCommandPool(&.{
@@ -137,18 +127,34 @@ pub fn main(init: std.process.Init) !void {
     }, null);
     defer gc.dev.destroyCommandPool(pool, null);
 
+    const vertex_bytes: vk.DeviceSize = triangulated.vertices.len * @sizeOf(Vertex);
     const vertex_buffer = try gc.dev.createBuffer(&.{
-        .size = @sizeOf(@TypeOf(vertices)),
+        .size = vertex_bytes,
         .usage = .{ .transfer_dst_bit = true, .vertex_buffer_bit = true },
         .sharing_mode = .exclusive,
     }, null);
     defer gc.dev.destroyBuffer(vertex_buffer, null);
-    const mem_reqs = gc.dev.getBufferMemoryRequirements(vertex_buffer);
-    const memory = try gc.allocate(mem_reqs, .{ .device_local_bit = true });
-    defer gc.dev.freeMemory(memory, null);
-    try gc.dev.bindBufferMemory(vertex_buffer, memory, 0);
+    const v_mem_reqs = gc.dev.getBufferMemoryRequirements(vertex_buffer);
+    const vertex_memory = try gc.allocate(v_mem_reqs, .{ .device_local_bit = true });
+    defer gc.dev.freeMemory(vertex_memory, null);
+    try gc.dev.bindBufferMemory(vertex_buffer, vertex_memory, 0);
 
-    try uploadVertices(&gc, pool, vertex_buffer);
+    const index_bytes: vk.DeviceSize = triangulated.indices.len * @sizeOf(u32);
+    const index_buffer = try gc.dev.createBuffer(&.{
+        .size = index_bytes,
+        .usage = .{ .transfer_dst_bit = true, .index_buffer_bit = true },
+        .sharing_mode = .exclusive,
+    }, null);
+    defer gc.dev.destroyBuffer(index_buffer, null);
+    const i_mem_reqs = gc.dev.getBufferMemoryRequirements(index_buffer);
+    const index_memory = try gc.allocate(i_mem_reqs, .{ .device_local_bit = true });
+    defer gc.dev.freeMemory(index_memory, null);
+    try gc.dev.bindBufferMemory(index_buffer, index_memory, 0);
+
+    try uploadToBuffer(&gc, pool, vertex_buffer, std.mem.sliceAsBytes(triangulated.vertices));
+    try uploadToBuffer(&gc, pool, index_buffer, std.mem.sliceAsBytes(triangulated.indices));
+
+    const index_count: u32 = @intCast(triangulated.indices.len);
 
     const UserPos = struct {
         x: f32 = 0,
@@ -161,22 +167,40 @@ pub fn main(init: std.process.Init) !void {
 
     var userPos = UserPos{};
 
+    const camRotation = struct {
+        fn f(pos: UserPos) Mat4 {
+            // R_cam = rotateY(yaw) * rotateX(pitch) * rotateZ(roll)
+            // yaw is applied last around world Y so pitch happens in the camera's
+            // already-yawed local frame (standard FPS convention).
+            return math.mat4.mul(math.mat4.mul(
+                math.mat4.rotateY(pos.yaw),
+                math.mat4.rotateX(pos.pitch),
+            ), math.mat4.rotateZ(pos.roll));
+        }
+    }.f;
+
     const computeMvp = struct {
         fn f(ext: vk.Extent2D, pos: UserPos) Mat4 {
             const aspect = @as(f32, @floatFromInt(ext.width)) /
                 @as(f32, @floatFromInt(ext.height));
             const proj = math.mat4.perspective(std.math.degreesToRadians(60.0), aspect, 0.1, 100.0);
-            const view = math.mat4.translate(0, 0, -2);
-            const model = math.mat4.mul(math.mat4.mul(
-                math.mat4.rotateX(pos.pitch),
-                math.mat4.rotateY(pos.yaw),
-            ), math.mat4.rotateZ(pos.roll));
-            return math.mat4.mul(proj, math.mat4.mul(view, model));
+            // View = R_cam^-1 * T(-cam_pos). Inverse of a rotation product is
+            // reverse-order with negated angles.
+            const view_rot = math.mat4.mul(math.mat4.mul(
+                math.mat4.rotateZ(-pos.roll),
+                math.mat4.rotateX(-pos.pitch),
+            ), math.mat4.rotateY(-pos.yaw));
+            const view_trans = math.mat4.translate(-pos.x, -pos.y, -pos.z - 2);
+            const view = math.mat4.mul(view_rot, view_trans);
+            return math.mat4.mul(proj, view);
         }
     }.f;
 
     var cmdbufs = try allocateCommandBuffers(&gc, pool, allocator, framebuffers.len);
     defer destroyCommandBuffers(&gc, pool, allocator, cmdbufs);
+
+    var fps_window_start = std.Io.Clock.Timestamp.now(init.io, .awake);
+    var frame_count: u32 = 0;
 
     var state: Swapchain.PresentState = .optimal;
     while (c.glfwWindowShouldClose(window.window) == c.GLFW_FALSE) {
@@ -195,9 +219,34 @@ pub fn main(init: std.process.Init) !void {
         if (c.glfwGetKey(window.window, c.GLFW_KEY_RIGHT) == c.GLFW_PRESS)
             userPos.yaw -= 0.001;
         if (c.glfwGetKey(window.window, c.GLFW_KEY_UP) == c.GLFW_PRESS)
-            userPos.pitch -= 0.001;
-        if (c.glfwGetKey(window.window, c.GLFW_KEY_DOWN) == c.GLFW_PRESS)
             userPos.pitch += 0.001;
+        if (c.glfwGetKey(window.window, c.GLFW_KEY_DOWN) == c.GLFW_PRESS)
+            userPos.pitch -= 0.001;
+        if (c.glfwGetKey(window.window, c.GLFW_KEY_Q) == c.GLFW_PRESS)
+            userPos.roll += 0.001;
+        if (c.glfwGetKey(window.window, c.GLFW_KEY_E) == c.GLFW_PRESS)
+            userPos.roll -= 0.001;
+
+        var dx: f32 = 0;
+        var dy: f32 = 0;
+        var dz: f32 = 0;
+        if (c.glfwGetKey(window.window, c.GLFW_KEY_W) == c.GLFW_PRESS)
+            dz -= 0.001;
+        if (c.glfwGetKey(window.window, c.GLFW_KEY_S) == c.GLFW_PRESS)
+            dz += 0.001;
+        if (c.glfwGetKey(window.window, c.GLFW_KEY_A) == c.GLFW_PRESS)
+            dx -= 0.001;
+        if (c.glfwGetKey(window.window, c.GLFW_KEY_D) == c.GLFW_PRESS)
+            dx += 0.001;
+        if (c.glfwGetKey(window.window, c.GLFW_KEY_SPACE) == c.GLFW_PRESS)
+            dy += 0.001;
+        if (c.glfwGetKey(window.window, c.GLFW_KEY_LEFT_SHIFT) == c.GLFW_PRESS or c.glfwGetKey(window.window, c.GLFW_KEY_RIGHT_SHIFT) == c.GLFW_PRESS)
+            dy -= 0.001;
+
+        const rot = camRotation(userPos);
+        userPos.x += rot[0] * dx + rot[4] * dy + rot[8] * dz;
+        userPos.y += rot[1] * dx + rot[5] * dy + rot[9] * dz;
+        userPos.z += rot[2] * dx + rot[6] * dy + rot[10] * dz;
 
         if (state == .suboptimal or extent.width != @as(u32, @intCast(w)) or extent.height != @as(u32, @intCast(h))) {
             extent.width = @intCast(w);
@@ -205,8 +254,11 @@ pub fn main(init: std.process.Init) !void {
 
             try swapchain.recreate(extent);
 
+            depth.deinit(&gc);
+            depth = try Depth.init(&gc, extent);
+
             destroyFramebuffers(&gc, allocator, framebuffers);
-            framebuffers = try createFramebuffers(&gc, allocator, render_pass, swapchain);
+            framebuffers = try createFramebuffers(&gc, allocator, render_pass, swapchain, depth.view);
 
             destroyCommandBuffers(&gc, pool, allocator, cmdbufs);
             cmdbufs = try allocateCommandBuffers(&gc, pool, allocator, framebuffers.len);
@@ -228,6 +280,8 @@ pub fn main(init: std.process.Init) !void {
             pipeline,
             pipeline_layout,
             vertex_buffer,
+            index_buffer,
+            index_count,
             mvp,
         );
 
@@ -236,6 +290,14 @@ pub fn main(init: std.process.Init) !void {
             else => |narrow| return narrow,
         };
 
+        frame_count += 1;
+        const elapsed = fps_window_start.untilNow(init.io);
+        if (elapsed.raw.nanoseconds >= std.time.ns_per_s) {
+            std.log.info("FPS: {d}", .{frame_count});
+            frame_count = 0;
+            fps_window_start = std.Io.Clock.Timestamp.now(init.io, .awake);
+        }
+
         c.glfwPollEvents();
     }
 
@@ -243,9 +305,14 @@ pub fn main(init: std.process.Init) !void {
     try gc.dev.deviceWaitIdle();
 }
 
-fn uploadVertices(gc: *const GraphicsContext, pool: vk.CommandPool, buffer: vk.Buffer) !void {
+fn uploadToBuffer(
+    gc: *const GraphicsContext,
+    pool: vk.CommandPool,
+    dst: vk.Buffer,
+    bytes: []const u8,
+) !void {
     const staging_buffer = try gc.dev.createBuffer(&.{
-        .size = @sizeOf(@TypeOf(vertices)),
+        .size = bytes.len,
         .usage = .{ .transfer_src_bit = true },
         .sharing_mode = .exclusive,
     }, null);
@@ -259,11 +326,11 @@ fn uploadVertices(gc: *const GraphicsContext, pool: vk.CommandPool, buffer: vk.B
         const data = try gc.dev.mapMemory(staging_memory, 0, vk.WHOLE_SIZE, .{});
         defer gc.dev.unmapMemory(staging_memory);
 
-        const gpu_vertices: [*]Vertex = @ptrCast(@alignCast(data));
-        @memcpy(gpu_vertices, vertices[0..]);
+        const dst_bytes: [*]u8 = @ptrCast(data);
+        @memcpy(dst_bytes[0..bytes.len], bytes);
     }
 
-    try copyBuffer(gc, pool, buffer, staging_buffer, @sizeOf(@TypeOf(vertices)));
+    try copyBuffer(gc, pool, dst, staging_buffer, bytes.len);
 }
 
 fn copyBuffer(
@@ -332,10 +399,13 @@ fn recordCommandBuffer(
     pipeline: vk.Pipeline,
     pipeline_layout: vk.PipelineLayout,
     vertex_buffer: vk.Buffer,
+    index_buffer: vk.Buffer,
+    index_count: u32,
     mvp: Mat4,
 ) !void {
-    const clear = vk.ClearValue{
-        .color = .{ .float_32 = .{ 0, 0, 0, 1 } },
+    const clears = [_]vk.ClearValue{
+        .{ .color = .{ .float_32 = .{ 0, 0, 0, 1 } } },
+        .{ .depth_stencil = .{ .depth = 1.0, .stencil = 0 } },
     };
 
     const viewport = vk.Viewport{
@@ -367,8 +437,8 @@ fn recordCommandBuffer(
         .render_pass = render_pass,
         .framebuffer = framebuffer,
         .render_area = render_area,
-        .clear_value_count = 1,
-        .p_clear_values = @ptrCast(&clear),
+        .clear_value_count = clears.len,
+        .p_clear_values = &clears,
     }, .@"inline");
 
     gc.dev.cmdBindPipeline(cmdbuf, .graphics, pipeline);
@@ -382,7 +452,8 @@ fn recordCommandBuffer(
     );
     const offset = [_]vk.DeviceSize{0};
     gc.dev.cmdBindVertexBuffers(cmdbuf, 0, &.{vertex_buffer}, &offset);
-    gc.dev.cmdDraw(cmdbuf, vertices.len, 1, 0, 0);
+    gc.dev.cmdBindIndexBuffer(cmdbuf, index_buffer, 0, .uint32);
+    gc.dev.cmdDrawIndexed(cmdbuf, index_count, 1, 0, 0, 0);
 
     gc.dev.cmdEndRenderPass(cmdbuf);
     try gc.dev.endCommandBuffer(cmdbuf);
@@ -393,7 +464,13 @@ fn destroyCommandBuffers(gc: *const GraphicsContext, pool: vk.CommandPool, alloc
     allocator.free(cmdbufs);
 }
 
-fn createFramebuffers(gc: *const GraphicsContext, allocator: Allocator, render_pass: vk.RenderPass, swapchain: Swapchain) ![]vk.Framebuffer {
+fn createFramebuffers(
+    gc: *const GraphicsContext,
+    allocator: Allocator,
+    render_pass: vk.RenderPass,
+    swapchain: Swapchain,
+    depth_view: vk.ImageView,
+) ![]vk.Framebuffer {
     const framebuffers = try allocator.alloc(vk.Framebuffer, swapchain.swap_images.len);
     errdefer allocator.free(framebuffers);
 
@@ -401,10 +478,11 @@ fn createFramebuffers(gc: *const GraphicsContext, allocator: Allocator, render_p
     errdefer for (framebuffers[0..i]) |fb| gc.dev.destroyFramebuffer(fb, null);
 
     for (framebuffers) |*fb| {
+        const attachments = [_]vk.ImageView{ swapchain.swap_images[i].view, depth_view };
         fb.* = try gc.dev.createFramebuffer(&.{
             .render_pass = render_pass,
-            .attachment_count = 1,
-            .p_attachments = @ptrCast(&swapchain.swap_images[i].view),
+            .attachment_count = attachments.len,
+            .p_attachments = &attachments,
             .width = swapchain.extent.width,
             .height = swapchain.extent.height,
             .layers = 1,
@@ -421,33 +499,77 @@ fn destroyFramebuffers(gc: *const GraphicsContext, allocator: Allocator, framebu
 }
 
 fn createRenderPass(gc: *const GraphicsContext, swapchain: Swapchain) !vk.RenderPass {
-    const color_attachment = vk.AttachmentDescription{
-        .format = swapchain.surface_format.format,
-        .samples = .{ .@"1_bit" = true },
-        .load_op = .clear,
-        .store_op = .store,
-        .stencil_load_op = .dont_care,
-        .stencil_store_op = .dont_care,
-        .initial_layout = .undefined,
-        .final_layout = .present_src_khr,
+    const attachments = [_]vk.AttachmentDescription{
+        .{
+            .format = swapchain.surface_format.format,
+            .samples = .{ .@"1_bit" = true },
+            .load_op = .clear,
+            .store_op = .store,
+            .stencil_load_op = .dont_care,
+            .stencil_store_op = .dont_care,
+            .initial_layout = .undefined,
+            .final_layout = .present_src_khr,
+        },
+        .{
+            .format = depth_format,
+            .samples = .{ .@"1_bit" = true },
+            .load_op = .clear,
+            .store_op = .dont_care,
+            .stencil_load_op = .dont_care,
+            .stencil_store_op = .dont_care,
+            .initial_layout = .undefined,
+            .final_layout = .depth_stencil_attachment_optimal,
+        },
     };
 
     const color_attachment_ref = vk.AttachmentReference{
         .attachment = 0,
         .layout = .color_attachment_optimal,
     };
+    const depth_attachment_ref = vk.AttachmentReference{
+        .attachment = 1,
+        .layout = .depth_stencil_attachment_optimal,
+    };
 
     const subpass = vk.SubpassDescription{
         .pipeline_bind_point = .graphics,
         .color_attachment_count = 1,
         .p_color_attachments = @ptrCast(&color_attachment_ref),
+        .p_depth_stencil_attachment = &depth_attachment_ref,
+    };
+
+    // Serialize color + depth writes between consecutive frames using the
+    // same attachments.
+    const dependency = vk.SubpassDependency{
+        .src_subpass = vk.SUBPASS_EXTERNAL,
+        .dst_subpass = 0,
+        .src_stage_mask = .{
+            .color_attachment_output_bit = true,
+            .early_fragment_tests_bit = true,
+            .late_fragment_tests_bit = true,
+        },
+        .dst_stage_mask = .{
+            .color_attachment_output_bit = true,
+            .early_fragment_tests_bit = true,
+        },
+        .src_access_mask = .{
+            .color_attachment_write_bit = true,
+            .depth_stencil_attachment_write_bit = true,
+        },
+        .dst_access_mask = .{
+            .color_attachment_write_bit = true,
+            .depth_stencil_attachment_read_bit = true,
+            .depth_stencil_attachment_write_bit = true,
+        },
     };
 
     return try gc.dev.createRenderPass(&.{
-        .attachment_count = 1,
-        .p_attachments = @ptrCast(&color_attachment),
+        .attachment_count = attachments.len,
+        .p_attachments = &attachments,
         .subpass_count = 1,
         .p_subpasses = @ptrCast(&subpass),
+        .dependency_count = 1,
+        .p_dependencies = @ptrCast(&dependency),
     }, null);
 }
 
@@ -547,6 +669,27 @@ fn createPipeline(
         .p_dynamic_states = &dynstate,
     };
 
+    const noop_stencil: vk.StencilOpState = .{
+        .fail_op = .keep,
+        .pass_op = .keep,
+        .depth_fail_op = .keep,
+        .compare_op = .always,
+        .compare_mask = 0,
+        .write_mask = 0,
+        .reference = 0,
+    };
+    const pdssci = vk.PipelineDepthStencilStateCreateInfo{
+        .depth_test_enable = .true,
+        .depth_write_enable = .true,
+        .depth_compare_op = .less_or_equal,
+        .depth_bounds_test_enable = .false,
+        .stencil_test_enable = .false,
+        .front = noop_stencil,
+        .back = noop_stencil,
+        .min_depth_bounds = 0,
+        .max_depth_bounds = 1,
+    };
+
     const gpci = vk.GraphicsPipelineCreateInfo{
         .flags = .{},
         .stage_count = 2,
@@ -557,7 +700,7 @@ fn createPipeline(
         .p_viewport_state = &pvsci,
         .p_rasterization_state = &prsci,
         .p_multisample_state = &pmsci,
-        .p_depth_stencil_state = null,
+        .p_depth_stencil_state = &pdssci,
         .p_color_blend_state = &pcbsci,
         .p_dynamic_state = &pdsci,
         .layout = layout,
