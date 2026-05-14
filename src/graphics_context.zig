@@ -3,7 +3,7 @@ const vk = @import("vulkan");
 const c = @import("c");
 const Allocator = std.mem.Allocator;
 
-const required_layer_names = [_][*:0]const u8{"VK_LAYER_KHRONOS_validation"};
+const wanted_layer_names = [_][*:0]const u8{"VK_LAYER_KHRONOS_validation"};
 
 const required_device_extensions = [_][*:0]const u8{vk.extensions.khr_swapchain.name};
 
@@ -59,9 +59,8 @@ pub const GraphicsContext = struct {
         self.allocator = allocator;
         self.vkb = BaseWrapper.load(getGlfwInstanceProcAddr);
 
-        if (try checkLayerSupport(&self.vkb, self.allocator) == false) {
-            return error.MissingLayer;
-        }
+        const enabled_layers = try filterAvailableLayers(&self.vkb, allocator);
+        defer allocator.free(enabled_layers);
 
         var extension_names: std.ArrayList([*:0]const u8) = .empty;
         defer extension_names.deinit(allocator);
@@ -83,8 +82,8 @@ pub const GraphicsContext = struct {
                 .engine_version = vk.makeApiVersion(0, 0, 0, 0).toU32(),
                 .api_version = vk.API_VERSION_1_3.toU32(),
             },
-            .enabled_layer_count = required_layer_names.len,
-            .pp_enabled_layer_names = @ptrCast(&required_layer_names),
+            .enabled_layer_count = @intCast(enabled_layers.len),
+            .pp_enabled_layer_names = enabled_layers.ptr,
             .enabled_extension_count = @intCast(extension_names.items.len),
             .pp_enabled_extension_names = extension_names.items.ptr,
             // enumerate_portability_bit_khr to support vulkan in mac os
@@ -170,19 +169,26 @@ pub const GraphicsContext = struct {
     }
 };
 
-fn checkLayerSupport(vkb: *const BaseWrapper, alloc: Allocator) !bool {
+fn filterAvailableLayers(vkb: *const BaseWrapper, alloc: Allocator) ![]const [*:0]const u8 {
     const available_layers = try vkb.enumerateInstanceLayerPropertiesAlloc(alloc);
     defer alloc.free(available_layers);
-    for (required_layer_names) |required_layer| {
+
+    var enabled: std.ArrayList([*:0]const u8) = .empty;
+    errdefer enabled.deinit(alloc);
+
+    for (wanted_layer_names) |wanted| {
+        const wanted_slice = std.mem.span(wanted);
         for (available_layers) |layer| {
-            if (std.mem.eql(u8, std.mem.span(required_layer), std.mem.sliceTo(&layer.layer_name, 0))) {
+            if (std.mem.eql(u8, wanted_slice, std.mem.sliceTo(&layer.layer_name, 0))) {
+                try enabled.append(alloc, wanted);
                 break;
             }
         } else {
-            return false;
+            std.log.warn("Vulkan layer '{s}' not available; continuing without it", .{wanted_slice});
         }
     }
-    return true;
+
+    return enabled.toOwnedSlice(alloc);
 }
 
 pub const Queue = struct {
